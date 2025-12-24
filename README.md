@@ -1,3 +1,4 @@
+
 # StackGen DevOps Assignment – Hello World on EKS
 
 This repository contains an end‑to‑end solution using **AWS + Terraform + EKS + ECR + GitHub Actions**.  
