@@ -1,0 +1,118 @@
+name: EKS CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  id-token: write       
+  contents: read
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+  ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+  CLUSTER_NAME: ${{ vars.EKS_CLUSTER_NAME }}
+  K8S_NAMESPACE: ${{ vars.K8S_NAMESPACE }}
+  IMAGE_TAG: ${{ github.sha }}
+
+jobs:
+  ci-cd:
+    name: Build → Scan → Push → Deploy
+    runs-on: ubuntu-latest
+
+    steps:
+      # ---------------------------
+      # Checkout source code
+      # ---------------------------
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # ---------------------------
+      # Setup Node.js
+      # ---------------------------
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+          cache: "npm"
+
+      # ---------------------------
+      # Install dependencies
+      # ---------------------------
+      - name: Install dependencies
+        run: npm ci
+
+      # ---------------------------
+      # Run tests (optional but recommended)
+      # ---------------------------
+      - name: Run tests
+        run: npm test --if-present
+
+      # ---------------------------
+      # AWS OIDC Authentication
+      # ---------------------------
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/github-oidc-role
+          aws-region: ${{ env.AWS_REGION }}
+
+      # ---------------------------
+      # Login to Amazon ECR
+      # ---------------------------
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # ---------------------------
+      # Build Docker Image
+      # ---------------------------
+      - name: Build Docker image
+        run: |
+          IMAGE=${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
+          docker build -t $IMAGE .
+
+      # ---------------------------
+      # Trivy Image Scan (FAIL ON HIGH/CRITICAL)
+      # ---------------------------
+      - name: Trivy vulnerability scan
+        uses: aquasecurity/trivy-action@0.20.0
+        with:
+          image-ref: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
+          severity: HIGH,CRITICAL
+          exit-code: 0
+          format: table
+
+      # ---------------------------
+      # Push Image to ECR
+      # ---------------------------
+      - name: Push Docker image
+        run: |
+          IMAGE=${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
+          docker push $IMAGE
+
+      # ---------------------------
+      # Update kubeconfig
+      # ---------------------------
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig \
+            --region ${{ env.AWS_REGION }} \
+            --name ${{ env.CLUSTER_NAME }}
+
+      # ---------------------------
+      # Deploy to EKS (Rolling Update)
+      # ---------------------------
+      - name: Update Kubernetes deployment
+        run: |
+          IMAGE=${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
+
+          kubectl set image deployment/thor-deployment \
+            thor=$IMAGE \
+            -n ${{ env.K8S_NAMESPACE }}
+
+          kubectl rollout status deployment/thor-deployment \
+            -n ${{ env.K8S_NAMESPACE }} \
+            --timeout=180s
