@@ -1,0 +1,16 @@
+{
+    "name": "eks-github",
+    "version": "1.0.0",
+    "description": "Simple Node.js app for EKS testing",
+    "main": "server.js",
+    "scripts": {
+      "start": "node server.js",
+      "lint": "eslint ."
+    },
+    "dependencies": {
+      "express": "^4.18.2"
+    },
+    "devDependencies": {
+      "eslint": "^9.39.2"
+    }
+  }
